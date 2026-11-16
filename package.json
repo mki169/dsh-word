@@ -41,7 +41,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepare": "npm run build",
+    "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:helper": "python3 -m unittest discover -s tests -p 'test_*.py' -v",
     "test:node": "node --test tests/node.test.mjs",

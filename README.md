@@ -57,13 +57,13 @@ From a local checkout:
 ```bash
 cd dsh-word
 npm install
+npm run build
 dsh plugin --profile web add "$(pwd)"
 ```
 
-`npm install` runs the build automatically. Restart the profile after
-installing. The package is linked into the profile, so after changing the
-plugin source run `npm run build` again; after changing `cordis.patch.yml`,
-reinstall or restart dsh.
+`lib/` is committed, so the GitHub install needs no build step. For local
+development, run `npm run build` after changing the source. Restart the profile
+after installing. After changing `cordis.patch.yml`, reinstall or restart dsh.
 
 To use a different profile, replace `web` with its name (for example `tui`).
 
