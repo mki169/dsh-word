@@ -1,0 +1,82 @@
+{
+  "name": "dsh-office-word",
+  "version": "0.1.0",
+  "description": "Microsoft Word tools for DeepSeek Harness on macOS",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "homepage": "https://github.com/mki169/dsh-word#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mki169/dsh-word.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mki169/dsh-word/issues"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "helper/word_helper.py",
+    "helper/export_pdf.applescript",
+    "cordis.patch.yml",
+    "README.md",
+    "package.json"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": ">=0.2.0-rc.2"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:helper": "python3 -m unittest discover -s tests -p 'test_*.py' -v",
+    "test:node": "node --test tests/node.test.mjs",
+    "test:word": "DSH_WORD_TEST_WORD=1 node --test tests/node.test.mjs",
+    "test": "npm run build && npm run test:helper && npm run test:node"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0",
+    "@deepseek-ai/dsh-attachment": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.1.0",
+    "@deepseek-ai/dsh-attachment": "0.2.2-rc.3",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.3",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.3",
+    "@deepseek-ai/schemastery": "^3.19.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "license": "MIT",
+  "author": "mki169",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "word",
+    "docx",
+    "macos",
+    "python-docx"
+  ]
+}

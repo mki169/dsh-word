@@ -1,0 +1,7 @@
+- insert:
+    - id: office-word
+      name: dsh-office-word
+      config:
+        pdfEngine: auto
+        allowOutsideWorkspace: false
+        backup: true
