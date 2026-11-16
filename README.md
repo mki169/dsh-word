@@ -189,6 +189,9 @@ skipped when LibreOffice is not installed. To include the Word export test:
 npm run test:word
 ```
 
+When `src/` changes, commit the rebuilt `lib/` too: GitHub installs use the
+committed build.
+
 The Python helper is `helper/word_helper.py`; it reads one JSON command from
 stdin and writes one JSON result to stdout. The TypeScript host spawns it,
 enforces path policy and timeouts, and exposes the dsh tools.
