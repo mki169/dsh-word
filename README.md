@@ -110,7 +110,9 @@ word_read  {path: "report.docx"}
 word_edit  {path: "report.docx", ops: [
   {op: "set_text", para: 4, expect: "Old heading", text: "New heading"},
   {op: "replace_text", find: "2025", replace: "2026"},
-  {op: "insert_paragraphs", after: 9, items: ["A new paragraph."]}
+  {op: "insert_paragraphs", after: 9, items: ["A new paragraph."]},
+  {op: "insert_list", after: 9, items: ["1. First", "   a. Nested"]},
+  {op: "new_page", after: 12}
 ]}
 word_render {path: "report.docx", pages: "1-2"}
 word_export {path: "report.docx"}
@@ -119,6 +121,50 @@ word_export {path: "report.docx"}
 Read the document again after inserts or deletes: paragraph numbers shift.
 Pass `expect` on destructive operations; if the first words do not match, the
 edit stops instead of changing the wrong paragraph.
+
+## Lists, indentation and typesetting
+
+Lists use real Word numbering, so they renumber correctly and keep their
+hierarchy:
+
+```json
+{
+  "type": "list",
+  "numbering": "legal",
+  "items": [
+    "1. First item",
+    "   a. Nested item",
+    "      i. Roman sub-item",
+    "         (1) Decimal sub-item",
+    "            (A) Upper-alpha sub-item",
+    "2. Second item"
+  ]
+}
+```
+
+- `numbering: "legal"` gives `1.` → `(a)` → `(i)` → `(1)` → `(A)` → `(I)`.
+- `numbering: "decimal"` gives decimal numbers at every level.
+- `bullets` and `{type: "list", ordered: false}` give bullet and sub-bullet
+  levels.
+- Items can also be objects with an explicit `level` (1-9) instead of relying
+  on indentation or marker syntax.
+- A `paragraph` whose text is entirely two or more list lines is parsed as a
+  list automatically.
+- `word_edit` supports `insert_list` for adding a nested list at a position.
+
+`word_read` keeps the hierarchy in its Markdown, for example:
+
+```text
+[p0] (List Paragraph) 1. First item
+[p1] (List Paragraph)   (a) Nested item
+[p2] (List Paragraph)     (i) Roman sub-item
+```
+
+Typesetting fields include `leftIndent`, `rightIndent`, `firstLineIndent`,
+`indentChars`, `lineSpacing`, `spaceBefore`, `spaceAfter`, `keepWithNext`,
+`keepTogether`, `widowControl` and `pageBreakBefore`. Use `page_break` or
+`new_page` to start a new page, and the `new_page` edit operation to insert a
+page break between paragraphs.
 
 ## Safety and behaviour
 

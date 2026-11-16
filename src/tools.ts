@@ -122,14 +122,15 @@ const BLOCK = {
     type: {
       type: 'string',
       required: true,
-      enum: ['paragraph', 'heading', 'bullets', 'list', 'quote', 'code', 'table', 'image', 'page_break', 'toc'],
-      description: 'paragraph (default), heading, bullets, list, quote, code, table, image, page_break, or toc.',
+      enum: ['paragraph', 'heading', 'bullets', 'list', 'quote', 'code', 'table', 'image', 'page_break', 'new_page', 'toc'],
+      description: 'paragraph (default), heading, bullets, list, quote, code, table, image, page_break/new_page, or toc.',
     },
-    text: { type: 'string', description: 'Text for paragraph, heading, quote or code. **bold**, *italic* and `code` are recognised. Newlines split paragraphs.' },
-    level: { type: 'integer', description: 'Heading level 1-6.' },
+    text: { type: 'string', description: 'Text for paragraph, heading, quote or code. **bold**, *italic* and `code` are recognised. Newlines split paragraphs; two or more list lines are detected automatically.' },
+    level: { type: 'integer', description: 'Heading level 1-6, or list nesting level 1-9.' },
     style: { type: 'string', description: 'A Word style name, e.g. Title, Heading 1, List Bullet, Quote.' },
-    items: { type: 'array', description: 'Strings, or objects with text, for bullets/list. For table, rows go in rows.' },
+    items: { type: 'array', description: 'Strings, or objects with text/level/ordered/format, for bullets/list. Strings may include indentation and markers such as "1.", "a.", "(i)", "(A)" or "-".' },
     ordered: { type: 'boolean', description: 'list: true = numbered, false = bullets.' },
+    numbering: { type: 'string', enum: ['legal', 'decimal', 'bullet'], description: 'Numbering scheme: legal (1., (a), (i), (1), (A)...), decimal, or bullet.' },
     rows: { type: 'array', description: 'Table cells: [[cell, ...], ...].' },
     data: { type: 'array', description: 'Alias for rows.' },
     caption: { type: 'string', description: 'Caption. Tables get it above, figures below.' },
@@ -146,9 +147,16 @@ const BLOCK = {
     color: { type: 'string', description: '#RRGGBB.' },
     font: { type: 'string' },
     firstLineIndent: { type: 'string', description: 'First-line indent, e.g. "2ch" or "0.74cm".' },
+    leftIndent: { type: 'string', description: 'Left indent, e.g. "1.27cm".' },
+    rightIndent: { type: 'string', description: 'Right indent, e.g. "1.27cm".' },
+    indentChars: { type: 'string', description: 'First-line indent in characters, e.g. "2ch".' },
     lineSpacing: { type: 'string', description: '1.5, "20pt" or "at least 20pt".' },
     spaceBefore: { type: 'string' },
     spaceAfter: { type: 'string' },
+    keepWithNext: { type: 'boolean', description: 'Keep this paragraph on the same page as the next one.' },
+    keepTogether: { type: 'boolean', description: 'Keep all lines of this paragraph on one page.' },
+    widowControl: { type: 'boolean', description: 'Avoid single-line widows and orphans.' },
+    pageBreakBefore: { type: 'boolean', description: 'Start this paragraph on a new page.' },
   },
 } as const
 
@@ -174,6 +182,7 @@ const OP = {
       required: true,
       enum: [
         'insert_paragraphs',
+        'insert_list',
         'set_text',
         'replace_text',
         'delete_range',
@@ -187,6 +196,7 @@ const OP = {
         'footer',
         'page_numbers',
         'page_break',
+        'new_page',
         'add_toc',
         'update_fields',
       ],
@@ -200,7 +210,9 @@ const OP = {
     find: { type: 'string', description: 'Literal text for replace_text.' },
     replace: { type: 'string', description: 'Replacement text for replace_text.' },
     all: { type: 'boolean', description: 'replace_text: replace every occurrence (default true).' },
-    items: { type: 'array', description: 'insert_paragraphs: strings or objects with text/style/format fields.' },
+    items: { type: 'array', description: 'insert_paragraphs: strings or objects with text/style/format fields. insert_list: strings or objects with text/level/ordered; strings may include markers and indentation.' },
+    ordered: { type: 'boolean', description: 'insert_list: true = numbered, false = bullets.' },
+    numbering: { type: 'string', enum: ['legal', 'decimal', 'bullet'], description: 'insert_list numbering scheme.' },
     rows: { type: 'array', description: 'insert_table: [[cell, ...], ...].' },
     data: { type: 'array', description: 'Alias for rows.' },
     caption: { type: 'string', description: 'Table or figure caption.' },
@@ -210,8 +222,8 @@ const OP = {
     col: { type: 'integer' },
     path: { type: 'string', description: 'Image path for insert_image.' },
     width: { type: 'string', description: 'Image width, e.g. "12cm".' },
-    style: { type: 'string', description: 'Style name for style_format.' },
-    level: { type: 'integer' },
+    style: { type: 'string', description: 'Style name for style_format or insert_list.' },
+    level: { type: 'integer', description: 'List nesting level 1-9 in an insert_list item.' },
     paper: { type: 'string', enum: ['A4', 'A3', 'B5', 'Letter'] },
     orientation: { type: 'string', enum: ['portrait', 'landscape'] },
     top: { type: 'number' },
@@ -226,9 +238,16 @@ const OP = {
     color: { type: 'string' },
     font: { type: 'string' },
     firstLineIndent: { type: 'string' },
+    leftIndent: { type: 'string' },
+    rightIndent: { type: 'string' },
+    indentChars: { type: 'string' },
     lineSpacing: { type: 'string' },
     spaceBefore: { type: 'string' },
     spaceAfter: { type: 'string' },
+    keepWithNext: { type: 'boolean' },
+    keepTogether: { type: 'boolean' },
+    widowControl: { type: 'boolean' },
+    pageBreakBefore: { type: 'boolean' },
     start: { type: 'integer', description: 'page_numbers: first page number.' },
     title: { type: 'string', description: 'add_toc: title above the contents.' },
   },
@@ -238,38 +257,48 @@ export const HELP = `Microsoft Word tools (file-level, macOS). Use them without 
 
 Reading and numbering
 - word_read returns every body paragraph as [p0], [p1], ... with its style, and tables as [t0], [t1], ...
+- List paragraphs keep their nesting: bullets and numbers are indented under their parent level.
 - Paragraph numbers are body paragraphs only; paragraphs inside table cells are not numbered.
 - Read again after inserting or deleting paragraphs: the numbers shift.
 - For destructive edits pass expect: the first words of the paragraph. If it does not match, the edit stops instead of changing the wrong text.
 
+Lists and indentation
+- bullet/list items are strings or {text, level?, ordered?, ...format}. level is 1-9; nested levels indent under the parent.
+- Strings may carry their own structure: "- item" and "  - sub item" become bullets; "1. item", "a. item", "(i) item", "(1) item" and "(A) item" become numbered items at the matching level.
+- numbering: legal = 1., (a), (i), (1), (A), (I)...; decimal = 1., 2., 3.; bullet = bullets at every level.
+- A paragraph whose text contains two or more list lines is converted to a list automatically.
+- word_read prints nested lists as indented Markdown markers.
+
 word_create
 - blocks are added in order. Types:
-  paragraph {text, style?, align?, bold?, italic?, size?, color?, font?, firstLineIndent?, lineSpacing?, spaceBefore?, spaceAfter?}
+  paragraph {text, style?, align?, bold?, italic?, size?, color?, font?, firstLineIndent?, leftIndent?, rightIndent?, indentChars?, lineSpacing?, spaceBefore?, spaceAfter?, keepWithNext?, keepTogether?, widowControl?, pageBreakBefore?}
   heading {text, level: 1-6}
-  bullets {items: [text | {text, ...format}]}
-  list {items: [...], ordered?: true}
+  bullets {items: [text | {text, level?, ...format}], numbering?}
+  list {items: [...], ordered?: true, numbering?: legal|decimal|bullet}
   quote {text}
   code {text}
   table {rows: [[cell, ...], ...], caption?, header?, style?}
   image {path, width? ("12cm" or "360pt"), caption?}
-  page_break {}
+  page_break {} or new_page {}
   toc {title?}
 - Top-level page: {paper: A4|A3|B5|Letter, orientation: portrait|landscape, top/bottom/left/right in cm}
 - header, footer, page_numbers, title, subtitle, author, subject, keywords, comments, overwrite, open.
 
 word_edit ops
 - insert_paragraphs {items, after?, where?: after|before|start|end}
+- insert_list {items, ordered?, numbering?, style?, after?, where?} — same list syntax as bullets/list.
 - set_text {para, expect, text} — keeps the paragraph style; refuses pictures/fields.
 - replace_text {find, replace, all?} — literal, within one paragraph; formatting is preserved when the match is inside one run.
 - delete_range {para, expect, to?} — removes paragraphs para..to.
 - insert_table {rows, caption?, header?, after?, where?}
 - set_cell {table, row, col, text}
 - insert_image {path, width?, caption?, after?, where?}
-- format_paragraph {para, expect?, bold?, italic?, underline?, size?, color?, font?, align?, firstLineIndent?, lineSpacing?, spaceBefore?, spaceAfter?, pageBreakBefore?}
-- style_format {style, font?, size?, bold?, italic?, color?, align?, firstLineIndent?, lineSpacing?, spaceBefore?, spaceAfter?, pageBreakBefore?} — changes a style everywhere it is used.
+- format_paragraph {para, expect?, bold?, italic?, underline?, size?, color?, font?, align?, firstLineIndent?, leftIndent?, rightIndent?, indentChars?, lineSpacing?, spaceBefore?, spaceAfter?, keepWithNext?, keepTogether?, widowControl?, pageBreakBefore?}
+- style_format {style, font?, size?, bold?, italic?, color?, align?, firstLineIndent?, leftIndent?, rightIndent?, lineSpacing?, spaceBefore?, spaceAfter?, keepWithNext?, keepTogether?, widowControl?, pageBreakBefore?} — changes a style everywhere it is used.
 - page_setup {paper?, orientation?, top?, bottom?, left?, right?}
 - header {text}; footer {text}; page_numbers {align?, start?}
-- page_break {para, expect}
+- page_break {para, expect} — starts that paragraph on a new page. Without para, inserts a page-break paragraph; use after?/where? to place it.
+- new_page is an alias for page_break.
 - add_toc {title?}; update_fields {}
 - Ops run in order and stop at the first failure. The file is saved atomically; the previous version is .bak unless backup is off.
 
@@ -306,7 +335,7 @@ export function createTools(host: ToolHost): ToolDefinition[] {
 
   tools.push(defineTool({
     name: 'word_create',
-    description: 'Create a .docx from blocks: headings, paragraphs, bullets, lists, quotes, code, tables, images, page breaks and a table of contents. Can also set title, author, page size/margins, header, footer and page numbers. Writes atomically and backs up an existing file unless overwrite is false.',
+    description: 'Create a .docx from blocks: headings, paragraphs, nested bullets/lists, quotes, code, tables, images, page breaks/new pages and a table of contents. Supports list indentation and legal numbering, typesetting fields, page size/margins, header, footer and page numbers. Writes atomically and backs up an existing file unless overwrite is false.',
     parameters: {
       path: PATH,
       blocks: { type: 'array', items: BLOCK, description: 'Content blocks in document order.' },
@@ -359,7 +388,7 @@ export function createTools(host: ToolHost): ToolDefinition[] {
 
   tools.push(defineTool({
     name: 'word_read',
-    description: 'Read a .docx as numbered Markdown: [p0], [p1] for body paragraphs (with style) and [t0] for tables, plus outline, properties, header/footer and statistics. Read before word_edit; numbers shift after inserts or deletes.',
+    description: 'Read a .docx as numbered Markdown: [p0], [p1] for body paragraphs (with style and list nesting) and [t0] for tables, plus outline, properties, header/footer and statistics. Read before word_edit; numbers shift after inserts or deletes.',
     parameters: {
       path: PATH,
       max_chars: { type: 'integer', description: 'Maximum Markdown characters (default from plugin config).' },
@@ -378,7 +407,7 @@ export function createTools(host: ToolHost): ToolDefinition[] {
 
   tools.push(defineTool({
     name: 'word_edit',
-    description: 'Edit an existing .docx with a batch of operations, in order. Read with word_read first and pass expect on destructive operations. Stops at the first failed op, saves atomically, and keeps a .bak by default.',
+    description: 'Edit an existing .docx with a batch of operations, in order: paragraphs, nested lists, tables, cells, images, typesetting, page setup, header/footer, page numbers, page breaks/new pages and TOC. Read with word_read first and pass expect on destructive operations. Stops at the first failed op, saves atomically, and keeps a .bak by default.',
     parameters: {
       path: PATH,
       ops: { type: 'array', items: OP, required: true, description: 'Operations in order; see word_help.' },

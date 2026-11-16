@@ -10,7 +10,7 @@ from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 WORD_APP = Path("/Applications/Microsoft Word.app")
 LIBREOFFICE = Path("/Applications/LibreOffice.app/Contents/MacOS/soffice")
 PAPER_SIZES = {
@@ -355,6 +355,10 @@ def apply_paragraph_format(paragraph, spec, style_font_size=11.0):
         fmt.right_indent = parse_length(right)
     if spec.get("keepWithNext") is not None:
         fmt.keep_with_next = bool(spec["keepWithNext"])
+    if spec.get("keepTogether") is not None:
+        fmt.keep_together = bool(spec["keepTogether"])
+    if spec.get("widowControl") is not None:
+        fmt.widow_control = bool(spec["widowControl"])
     if spec.get("pageBreakBefore") is not None:
         fmt.page_break_before = bool(spec["pageBreakBefore"])
 
@@ -529,6 +533,7 @@ def render_markdown(document, include_header_footer=True, max_chars=40000):
     table_number = 0
     image_count = 0
     word_count = 0
+    formats = numbering_formats(document)
     for block in iter_block_items(document):
         if block.__class__.__name__ == "Paragraph":
             style_name = block.style.name if block.style is not None else ""
@@ -546,6 +551,7 @@ def render_markdown(document, include_header_footer=True, max_chars=40000):
             prefix = f"[p{paragraph_number}]"
             if style_name and style_name != "Normal":
                 prefix += f" ({style_name})"
+            list_marker = list_prefix(block, style_name, formats)
             if level is not None and text.strip():
                 body = "#" * level + " " + visible
             elif text.strip() == "" and page_break:
@@ -554,10 +560,8 @@ def render_markdown(document, include_header_footer=True, max_chars=40000):
                 body = "<image>"
             elif text.strip() == "":
                 body = "(empty paragraph)"
-            elif style_name.startswith("List Bullet"):
-                body = "- " + visible
-            elif style_name.startswith("List Number"):
-                body = "1. " + visible
+            elif list_marker is not None:
+                body = list_marker + visible
             elif style_name == "Quote":
                 body = "> " + visible
             else:
@@ -792,6 +796,263 @@ def place_before(anchor, element):
     anchor.addprevious(element)
 
 
+LEGAL_LEVEL_FORMATS = [
+    ("decimal", "%1."),
+    ("lowerLetter", "(%2)"),
+    ("lowerRoman", "(%3)"),
+    ("decimal", "(%4)"),
+    ("upperLetter", "(%5)"),
+    ("upperRoman", "(%6)"),
+    ("decimal", "(%7)"),
+    ("lowerLetter", "(%8)"),
+    ("lowerRoman", "(%9)"),
+]
+BULLET_LEVEL_CHARS = ["•", "◦", "▪", "•", "◦", "▪", "•", "◦", "▪"]
+BULLET_RE = re.compile(r"^([ \t]*)([-*+•◦▪‣·])\s+(.*)$")
+PAREN_RE = re.compile(r"^([ \t]*)\(([0-9]+|[A-Za-z]+)\)\s+(.*)$")
+DOT_RE = re.compile(r"^([ \t]*)([0-9]+|[A-Za-z]+)[.)]\s+(.*)$")
+MARKER_LEVELS = {"decimal": 0, "lowerLetter": 1, "lowerRoman": 2, "upperLetter": 4, "upperRoman": 5}
+
+
+def marker_format(marker):
+    if marker.isdigit():
+        return "decimal"
+    if marker.isupper():
+        if marker in "IVXLCDM":
+            return "upperRoman"
+        return "upperLetter"
+    if marker in "ivxlcdm":
+        return "lowerRoman"
+    return "lowerLetter"
+
+
+def marker_name(marker, parenthesized=False):
+    fmt = marker_format(marker)
+    level = MARKER_LEVELS[fmt]
+    if parenthesized and fmt == "decimal":
+        level = 3
+    return fmt, level
+
+
+def indent_level(whitespace):
+    width = 0
+    for char in whitespace:
+        width += 4 if char == "\t" else 1
+    return max(0, min(width // 2, 8))
+
+
+def parse_list_item(value, default_ordered=True):
+    explicit_level = None
+    if isinstance(value, dict):
+        item = dict(value)
+        text = str(item.get("text", ""))
+        ordered = bool(item.get("ordered", default_ordered))
+        if item.get("level") is not None:
+            explicit_level = max(0, min(int(item["level"]) - 1, 8))
+    else:
+        item = {"text": str(value)}
+        text = item["text"]
+        ordered = default_ordered
+    level = None
+    match = BULLET_RE.match(text)
+    if match:
+        level = indent_level(match.group(1))
+        item["text"] = match.group(3)
+        ordered = False
+    else:
+        match = PAREN_RE.match(text)
+        if match:
+            _, marker_level = marker_name(match.group(2), parenthesized=True)
+            level = marker_level
+            item["text"] = match.group(3)
+            ordered = True
+        else:
+            match = DOT_RE.match(text)
+            if match:
+                fmt, marker_level = marker_name(match.group(2))
+                level = indent_level(match.group(1)) if fmt == "decimal" else marker_level
+                item["text"] = match.group(3)
+                ordered = True
+    if level is None:
+        leading = re.match(r"^[ \t]*", item.get("text", "")).group(0)
+        level = indent_level(leading)
+        item["text"] = str(item.get("text", "")).strip()
+    if isinstance(value, dict) and "ordered" in value:
+        ordered = bool(value["ordered"])
+    item["level"] = explicit_level if explicit_level is not None else level
+    item["ordered"] = ordered
+    return item
+
+
+def create_list_numbering(document, numbering="legal"):
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    root = document.part.numbering_part.element
+    abstract_ids = [int(node.get(qn("w:abstractNumId"))) for node in root.findall(qn("w:abstractNum"))]
+    num_ids = [int(node.get(qn("w:numId"))) for node in root.findall(qn("w:num"))]
+    abstract_id = max(abstract_ids, default=-1) + 1
+    num_id = max(num_ids, default=0) + 1
+    if numbering == "bullet":
+        formats = [("bullet", BULLET_LEVEL_CHARS[level]) for level in range(9)]
+    elif numbering == "decimal":
+        formats = [("decimal", "%1." if level == 0 else f"%{level + 1}.") for level in range(9)]
+    else:
+        formats = LEGAL_LEVEL_FORMATS
+    abstract = OxmlElement("w:abstractNum")
+    abstract.set(qn("w:abstractNumId"), str(abstract_id))
+    multi = OxmlElement("w:multiLevelType")
+    multi.set(qn("w:val"), "multilevel")
+    abstract.append(multi)
+    for level, (fmt, text) in enumerate(formats):
+        node = OxmlElement("w:lvl")
+        node.set(qn("w:ilvl"), str(level))
+        start = OxmlElement("w:start")
+        start.set(qn("w:val"), "1")
+        node.append(start)
+        num_fmt = OxmlElement("w:numFmt")
+        num_fmt.set(qn("w:val"), fmt)
+        node.append(num_fmt)
+        lvl_text = OxmlElement("w:lvlText")
+        lvl_text.set(qn("w:val"), text)
+        node.append(lvl_text)
+        lvl_jc = OxmlElement("w:lvlJc")
+        lvl_jc.set(qn("w:val"), "left")
+        node.append(lvl_jc)
+        ppr = OxmlElement("w:pPr")
+        ind = OxmlElement("w:ind")
+        ind.set(qn("w:left"), str(720 * (level + 1)))
+        ind.set(qn("w:hanging"), "360")
+        ppr.append(ind)
+        node.append(ppr)
+        if fmt == "bullet":
+            rpr = OxmlElement("w:rPr")
+            fonts = OxmlElement("w:rFonts")
+            fonts.set(qn("w:ascii"), "Arial")
+            fonts.set(qn("w:hAnsi"), "Arial")
+            fonts.set(qn("w:hint"), "default")
+            rpr.append(fonts)
+            node.append(rpr)
+        abstract.append(node)
+    first_num = root.find(qn("w:num"))
+    cleanup = root.find(qn("w:numIdMacAtCleanup"))
+    if first_num is not None:
+        first_num.addprevious(abstract)
+    elif cleanup is not None:
+        cleanup.addprevious(abstract)
+    else:
+        root.append(abstract)
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), str(num_id))
+    abstract_ref = OxmlElement("w:abstractNumId")
+    abstract_ref.set(qn("w:val"), str(abstract_id))
+    num.append(abstract_ref)
+    if cleanup is not None:
+        cleanup.addprevious(num)
+    else:
+        root.append(num)
+    return num_id
+
+
+def apply_list_numbering(paragraph, num_id, level):
+    num_pr = paragraph._p.get_or_add_pPr().get_or_add_numPr()
+    num_pr.get_or_add_ilvl().val = int(level)
+    num_pr.get_or_add_numId().val = int(num_id)
+
+
+def add_list(document, block, default_ordered=True):
+    items = block.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise HelperError("INVALID_ARGUMENT", "list needs items: [...].")
+    numbering = str(block.get("numbering") or "legal").lower()
+    num_ids = {}
+    paragraphs = []
+    for raw in items:
+        item = parse_list_item(raw, default_ordered=default_ordered)
+        ordered = bool(item.get("ordered", default_ordered))
+        scheme = "bullet"
+        if ordered and numbering != "bullet":
+            scheme = "decimal" if numbering == "decimal" else "legal"
+        if scheme not in num_ids:
+            num_ids[scheme] = create_list_numbering(document, scheme)
+        paragraph = document.add_paragraph()
+        style = item.get("style") or block.get("style") or "List Paragraph"
+        if style and style_exists(document, str(style)):
+            paragraph.style = str(style)
+        runs = item.get("runs")
+        if runs:
+            add_explicit_runs(paragraph, runs, {**block, **item})
+        else:
+            add_runs(paragraph, str(item.get("text", "")), {**block, **item})
+        apply_paragraph_format(paragraph, {**block, **item})
+        apply_list_numbering(paragraph, num_ids[scheme], int(item.get("level", 0)))
+        paragraphs.append(paragraph)
+    return paragraphs
+
+
+def numbering_formats(document):
+    from docx.oxml.ns import qn
+
+    root = document.part.numbering_part.element
+    abstract = {}
+    for node in root.findall(qn("w:abstractNum")):
+        abstract_id = int(node.get(qn("w:abstractNumId")))
+        levels = {}
+        for lvl in node.findall(qn("w:lvl")):
+            level = int(lvl.get(qn("w:ilvl")))
+            fmt = lvl.find(qn("w:numFmt"))
+            text = lvl.find(qn("w:lvlText"))
+            levels[level] = (fmt.get(qn("w:val")) if fmt is not None else "decimal", text.get(qn("w:val")) if text is not None else "")
+        abstract[abstract_id] = levels
+    nums = {}
+    for node in root.findall(qn("w:num")):
+        num_id = int(node.get(qn("w:numId")))
+        ref = node.find(qn("w:abstractNumId"))
+        if ref is not None:
+            nums[num_id] = int(ref.get(qn("w:val")))
+    return {num_id: abstract.get(abstract_id, {}) for num_id, abstract_id in nums.items()}
+
+
+def list_marker_text(fmt, lvl_text):
+    if fmt == "bullet":
+        return "-"
+    base = {
+        "decimal": "1",
+        "lowerLetter": "a",
+        "lowerRoman": "i",
+        "upperLetter": "A",
+        "upperRoman": "I",
+    }.get(fmt, "1")
+    text = lvl_text or ""
+    if text.startswith("(") and text.endswith(")"):
+        return f"({base})"
+    if text.endswith(")"):
+        return f"{base})"
+    return f"{base}."
+
+
+def list_prefix(paragraph, style_name, formats):
+    from docx.oxml.ns import qn
+
+    ppr = paragraph._p.pPr
+    num_pr = ppr.find(qn("w:numPr")) if ppr is not None else None
+    if num_pr is not None:
+        num_id_node = num_pr.find(qn("w:numId"))
+        if num_id_node is not None:
+            num_id = int(num_id_node.get(qn("w:val")))
+            if num_id != 0:
+                ilvl_node = num_pr.find(qn("w:ilvl"))
+                level = int(ilvl_node.get(qn("w:val"))) if ilvl_node is not None else 0
+                fmt, lvl_text = formats.get(num_id, {}).get(level, ("decimal", "%1."))
+                return "  " * max(0, min(level, 8)) + list_marker_text(fmt, lvl_text) + " "
+    match = re.fullmatch(r"List (Bullet|Number)(?: ([2-9]))?", style_name or "")
+    if match:
+        level = int(match.group(2)) - 1 if match.group(2) else 0
+        marker = "-" if match.group(1) == "Bullet" else "1."
+        return "  " * level + marker + " "
+    return None
+
+
 def add_block(document, block):
     if not isinstance(block, dict):
         raise HelperError("INVALID_ARGUMENT", "Each block must be an object.")
@@ -807,7 +1068,14 @@ def add_block(document, block):
         return paragraph
     if kind == "paragraph":
         text = str(block.get("text", ""))
-        parts = text.split("\n") if "\n" in text and not block.get("runs") else [text]
+        lines = text.split("\n") if "\n" in text and not block.get("runs") else [text]
+        visible_lines = [line for line in lines if line.strip()]
+        if len(visible_lines) >= 2 and all(
+            BULLET_RE.match(line) or PAREN_RE.match(line) or DOT_RE.match(line)
+            for line in visible_lines
+        ):
+            return add_list(document, {**block, "items": visible_lines}, default_ordered=False)
+        parts = lines
         paragraphs = []
         for part in parts:
             paragraph = document.add_paragraph()
@@ -823,41 +1091,9 @@ def add_block(document, block):
             paragraphs.append(paragraph)
         return paragraphs[0] if len(paragraphs) == 1 else paragraphs
     if kind == "bullets":
-        items = block.get("items") or []
-        paragraphs = []
-        for item in items:
-            if isinstance(item, dict):
-                text = str(item.get("text", ""))
-                item_format = item
-            else:
-                text = str(item)
-                item_format = block
-            paragraph = document.add_paragraph()
-            if style_exists(document, "List Bullet"):
-                paragraph.style = "List Bullet"
-            add_runs(paragraph, text, item_format)
-            apply_paragraph_format(paragraph, item_format)
-            paragraphs.append(paragraph)
-        return paragraphs
+        return add_list(document, block, default_ordered=False)
     if kind == "list":
-        items = block.get("items") or []
-        ordered = bool(block.get("ordered", True))
-        style = "List Number" if ordered else "List Bullet"
-        paragraphs = []
-        for item in items:
-            if isinstance(item, dict):
-                text = str(item.get("text", ""))
-                item_format = item
-            else:
-                text = str(item)
-                item_format = block
-            paragraph = document.add_paragraph()
-            if style_exists(document, style):
-                paragraph.style = style
-            add_runs(paragraph, text, item_format)
-            apply_paragraph_format(paragraph, item_format)
-            paragraphs.append(paragraph)
-        return paragraphs
+        return add_list(document, block, default_ordered=bool(block.get("ordered", True)))
     if kind == "quote":
         paragraph = document.add_paragraph()
         if style_exists(document, "Quote"):
@@ -902,7 +1138,7 @@ def add_block(document, block):
         if caption:
             add_caption(document, paragraph._p, str(caption), "after")
         return paragraph
-    if kind == "page_break":
+    if kind in ("page_break", "new_page"):
         document.add_page_break()
         return document.paragraphs[-1]
     if kind == "toc":
@@ -1050,6 +1286,37 @@ def edit_command(payload):
                         inserted.append(paragraph)
                 numbers = [paragraph_index(document, paragraph) for paragraph in inserted]
                 detail = f"inserted {len(inserted)} paragraph(s) at {numbers}"
+            elif name == "insert_list":
+                items = op.get("items")
+                if not isinstance(items, list) or not items:
+                    raise HelperError("INVALID_ARGUMENT", "insert_list needs items: [...].")
+                block = {
+                    "items": items,
+                    "ordered": bool(op.get("ordered", True)),
+                    "numbering": op.get("numbering"),
+                    "style": op.get("style"),
+                }
+                anchor = None
+                where = str(op.get("where", "after" if op.get("after") is not None else "end"))
+                if op.get("after") is not None:
+                    anchor = find_paragraph(document, op["after"])._p
+                elif where in ("start", "before"):
+                    where = "start"
+                    body = document.element.body
+                    anchor = next((child for child in body.iterchildren() if child.tag.endswith("}p") or child.tag.endswith("}tbl")), None)
+                inserted = add_list(document, block, default_ordered=bool(op.get("ordered", True)))
+                cursor = anchor
+                first = True
+                for paragraph in inserted:
+                    if cursor is not None:
+                        if where in ("before", "start") and first:
+                            place_before(cursor, paragraph._p)
+                        else:
+                            place_after(cursor, paragraph._p)
+                    first = False
+                    cursor = paragraph._p
+                numbers = [paragraph_index(document, paragraph) for paragraph in inserted]
+                detail = f"inserted list of {len(inserted)} item(s) at {numbers}"
             elif name == "set_text":
                 paragraph = find_paragraph(document, op.get("para"))
                 check_expect(paragraph, op.get("expect"))
@@ -1197,12 +1464,22 @@ def edit_command(payload):
                             fmt.alignment = mapping[key]
                     if op.get("firstLineIndent") is not None:
                         fmt.first_line_indent = parse_length(op["firstLineIndent"], 11.0, characters=True)
+                    if op.get("leftIndent") is not None:
+                        fmt.left_indent = parse_length(op["leftIndent"])
+                    if op.get("rightIndent") is not None:
+                        fmt.right_indent = parse_length(op["rightIndent"])
                     if op.get("lineSpacing") is not None:
                         apply_line_spacing(fmt, op["lineSpacing"])
                     if op.get("spaceBefore") is not None:
                         fmt.space_before = parse_length(op["spaceBefore"])
                     if op.get("spaceAfter") is not None:
                         fmt.space_after = parse_length(op["spaceAfter"])
+                    if op.get("keepWithNext") is not None:
+                        fmt.keep_with_next = bool(op["keepWithNext"])
+                    if op.get("keepTogether") is not None:
+                        fmt.keep_together = bool(op["keepTogether"])
+                    if op.get("widowControl") is not None:
+                        fmt.widow_control = bool(op["widowControl"])
                     if op.get("pageBreakBefore") is not None:
                         fmt.page_break_before = bool(op["pageBreakBefore"])
                 detail = f"updated style {style_name!r}"
@@ -1241,11 +1518,27 @@ def edit_command(payload):
                             sect_pr.append(page_type)
                         page_type.set(qn("w:start"), str(int(op["start"])))
                 detail = "updated page numbers"
-            elif name == "page_break":
-                paragraph = find_paragraph(document, op.get("para"))
-                check_expect(paragraph, op.get("expect"))
-                paragraph.paragraph_format.page_break_before = True
-                detail = f"page break before paragraph {op.get('para')}"
+            elif name in ("page_break", "new_page"):
+                if op.get("para") is None:
+                    document.add_page_break()
+                    paragraph = document.paragraphs[-1]
+                    where = str(op.get("where", "after" if op.get("after") is not None else "end"))
+                    if op.get("after") is not None:
+                        anchor = find_paragraph(document, op["after"])._p
+                        if where == "before":
+                            place_before(anchor, paragraph._p)
+                        else:
+                            place_after(anchor, paragraph._p)
+                    elif where in ("start", "before"):
+                        first = next((child for child in document.element.body.iterchildren() if child.tag.endswith("}p") or child.tag.endswith("}tbl")), None)
+                        if first is not None:
+                            place_before(first, paragraph._p)
+                    detail = "inserted a page break"
+                else:
+                    paragraph = find_paragraph(document, op.get("para"))
+                    check_expect(paragraph, op.get("expect"))
+                    paragraph.paragraph_format.page_break_before = True
+                    detail = f"page break before paragraph {op.get('para')}"
             elif name == "add_toc":
                 add_toc(document, op)
                 detail = "inserted table of contents field"

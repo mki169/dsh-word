@@ -539,6 +539,125 @@ class WordHelperTests(unittest.TestCase):
         })
         self.assertEqual(error["code"], "PAGE_NOT_FOUND")
 
+    def test_nested_lists_and_numbering(self):
+        path, _ = self.create(blocks=[
+            {"type": "list", "numbering": "legal", "items": [
+                "1. First",
+                "   a. Alpha",
+                "   b. Beta",
+                "      i. Roman",
+                "         (1) Decimal sub",
+                "            (A) Upper alpha",
+                "2. Second",
+            ]},
+            {"type": "bullets", "items": ["- Bullet", "  - Sub bullet", "    - Deeper"]},
+        ])
+        markdown = self.read(path)["markdown"]
+        self.assertIn("[p0] (List Paragraph) 1. First", markdown)
+        self.assertIn("[p1] (List Paragraph)   (a) Alpha", markdown)
+        self.assertIn("[p2] (List Paragraph)   (a) Beta", markdown)
+        self.assertIn("    (i) Roman", markdown)
+        self.assertIn("      (1) Decimal sub", markdown)
+        self.assertIn("        (A) Upper alpha", markdown)
+        self.assertIn("[p6] (List Paragraph) 1. Second", markdown)
+        self.assertIn("[p7] (List Paragraph) - Bullet", markdown)
+        self.assertIn("[p8] (List Paragraph)   - Sub bullet", markdown)
+        self.assertIn("[p9] (List Paragraph)     - Deeper", markdown)
+
+        from docx import Document
+        from docx.oxml.ns import qn
+        document = Document(str(path))
+        levels = [paragraph._p.pPr.numPr.ilvl.val for paragraph in document.paragraphs]
+        self.assertEqual(levels, [0, 1, 1, 2, 3, 4, 0, 0, 1, 2])
+        formats = {}
+        for abstract in document.part.numbering_part.element.findall(qn("w:abstractNum")):
+            for level in abstract.findall(qn("w:lvl")):
+                index = int(level.get(qn("w:ilvl")))
+                fmt = level.find(qn("w:numFmt")).get(qn("w:val"))
+                formats.setdefault(index, set()).add(fmt)
+        self.assertIn("decimal", formats[0])
+        self.assertIn("lowerLetter", formats[1])
+        self.assertIn("lowerRoman", formats[2])
+        self.assertIn("decimal", formats[3])
+        self.assertIn("upperLetter", formats[4])
+        self.assertIn("upperRoman", formats[5])
+        self.assertIn("bullet", formats[0])
+
+    def test_auto_parse_list_paragraph(self):
+        path, _ = self.create(blocks=[
+            {"type": "paragraph", "text": "1. One\n2. Two\n   a. Sub"},
+            {"type": "paragraph", "text": "1. Single line stays a paragraph"},
+        ])
+        markdown = self.read(path)["markdown"]
+        self.assertIn("[p0] (List Paragraph) 1. One", markdown)
+        self.assertIn("[p1] (List Paragraph) 1. Two", markdown)
+        self.assertIn("[p2] (List Paragraph)   (a) Sub", markdown)
+        self.assertIn("[p3] 1. Single line stays a paragraph", markdown)
+
+    def test_insert_list_and_new_page(self):
+        path, _ = self.create(blocks=[
+            {"type": "paragraph", "text": "Intro"},
+            {"type": "paragraph", "text": "Outro"},
+        ])
+        result = call({
+            "command": "edit",
+            "path": str(path),
+            "ops": [
+                {"op": "insert_list", "after": 0, "items": [
+                    "1. Top", "   a. Sub", "   b. Sub two", "2. Top two",
+                ]},
+                {"op": "new_page", "after": 4},
+            ],
+        })
+        self.assertEqual([change["action"] for change in result["changes"]], ["insert_list", "new_page"])
+        markdown = self.read(path)["markdown"]
+        self.assertIn("[p1] (List Paragraph) 1. Top", markdown)
+        self.assertIn("[p2] (List Paragraph)   (a) Sub", markdown)
+        self.assertIn("[p5] <page break>", markdown)
+        self.assertIn("[p6] Outro", markdown)
+
+    def test_insert_list_at_start_keeps_order(self):
+        path, _ = self.create(blocks=[{"type": "paragraph", "text": "Existing"}])
+        call({
+            "command": "edit",
+            "path": str(path),
+            "ops": [{"op": "insert_list", "where": "start", "items": ["1. One", "2. Two"]}],
+        })
+        markdown = self.read(path)["markdown"]
+        self.assertLess(markdown.index("1. One"), markdown.index("1. Two"))
+        self.assertLess(markdown.index("1. Two"), markdown.index("Existing"))
+
+    def test_typesetting_flags(self):
+        path, _ = self.create(blocks=[{"type": "paragraph", "text": "Typeset"}])
+        call({
+            "command": "edit",
+            "path": str(path),
+            "ops": [{
+                "op": "format_paragraph", "para": 0, "expect": "Typeset",
+                "leftIndent": "1cm", "rightIndent": "2cm",
+                "keepWithNext": True, "keepTogether": True, "widowControl": False,
+                "pageBreakBefore": True,
+            }],
+        })
+        from docx import Document
+        document = Document(str(path))
+        fmt = document.paragraphs[0].paragraph_format
+        self.assertAlmostEqual(fmt.left_indent.cm, 1.0, places=1)
+        self.assertAlmostEqual(fmt.right_indent.cm, 2.0, places=1)
+        self.assertTrue(fmt.keep_with_next)
+        self.assertTrue(fmt.keep_together)
+        self.assertFalse(fmt.widow_control)
+        self.assertTrue(fmt.page_break_before)
+
+    def test_read_list_styles(self):
+        path, _ = self.create(blocks=[
+            {"type": "paragraph", "text": "Styled bullet", "style": "List Bullet 2"},
+            {"type": "paragraph", "text": "Styled number", "style": "List Number 3"},
+        ])
+        markdown = self.read(path)["markdown"]
+        self.assertIn("  - Styled bullet", markdown)
+        self.assertIn("    1. Styled number", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()

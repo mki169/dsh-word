@@ -78,6 +78,7 @@ test('create, read and edit a document', async t => {
       { type: 'heading', level: 1, text: 'Introduction' },
       { type: 'paragraph', text: 'This is **bold** and *italic*.' },
       { type: 'bullets', items: ['One', 'Two'] },
+      { type: 'list', numbering: 'legal', items: ['1. First', '   a. Sub item', '2. Second'] },
       { type: 'table', caption: 'Table 1', rows: [['Name', 'Value'], ['A', '1']] },
       { type: 'image', path: image, caption: 'Figure 1' },
     ],
@@ -89,6 +90,7 @@ test('create, read and edit a document', async t => {
   assert.match(read.markdown, /\[p1\] \(Heading 1\) # Introduction/)
   assert.match(read.markdown, /\[t0\] table 2x2/)
   assert.match(read.markdown, /<image>/)
+  assert.match(read.markdown, /\(a\) Sub item/)
   assert.equal(read.header, 'Header text')
   assert.match(read.footer, /^Footer text/)
   assert.equal(read.properties.title, 'Report')
@@ -99,16 +101,18 @@ test('create, read and edit a document', async t => {
   const edited = await engine.edit(document, {
     ops: [
       { op: 'insert_paragraphs', after: 1, items: ['Inserted paragraph'] },
+      { op: 'insert_list', after: 2, items: ['1. Step', '   a. Substep'] },
       { op: 'replace_text', find: 'bold', replace: 'strong' },
       { op: 'set_cell', table: 0, row: 1, col: 1, text: '42' },
       { op: 'format_paragraph', para: 2, expect: 'Inserted', bold: true, color: '#1F4E79' },
     ],
   })
-  assert.equal(edited.changes.length, 4)
+  assert.equal(edited.changes.length, 5)
   assert.ok(await exists(`${document}.bak`))
 
   const updated = await engine.read(document)
-  assert.match(updated.markdown, /\[p3\] This is \*\*strong\*\* and \*italic\*\./)
+  assert.match(updated.markdown, /\[p5\] This is \*\*strong\*\* and \*italic\*\./)
+  assert.match(updated.markdown, /\(a\) Substep/)
   assert.match(updated.markdown, /\| A \| 42 \|/)
 })
 
@@ -133,6 +137,10 @@ test('libreoffice PDF export and page rendering', { skip: !await exists(LIBREOFF
     blocks: [
       { type: 'heading', level: 1, text: 'Export' },
       { type: 'paragraph', text: 'LibreOffice export check.' },
+      { type: 'list', numbering: 'legal', items: ['1. First', '   a. Nested', '2. Second'] },
+      { type: 'bullets', items: ['Bullet', '  Sub bullet'] },
+      { type: 'new_page' },
+      { type: 'paragraph', text: 'Second page.' },
     ],
   })
   const pdf = join(root, 'export.pdf')
@@ -143,7 +151,7 @@ test('libreoffice PDF export and page rendering', { skip: !await exists(LIBREOFF
 
   const rendered = await engine.renderPages(document, { pages: '1', width: 640, engine: 'libreoffice' })
   try {
-    assert.ok(rendered.total_pages >= 1)
+    assert.ok(rendered.total_pages >= 2)
     assert.equal(rendered.pages.length, 1)
     assert.equal(rendered.pages[0].width, 640)
     assert.deepEqual((await readFile(rendered.pages[0].path)).subarray(0, 4), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
